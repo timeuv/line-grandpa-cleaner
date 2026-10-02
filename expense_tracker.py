@@ -72,52 +72,57 @@ def parse_local_thai_rules(text: str) -> Optional[Dict[str, Any]]:
 
     lower = clean.lower()
 
-    # Rule: Income keywords
-    income_keywords = [
-        "ลูกให้", "หลานให้", "ได้เงิน", "ได้มา", "เงินเดือน", "บำนาญ",
-        "เบี้ยคนชรา", "เบี้ยผู้สูงอายุ", "ขายได้", "ขายของได้", "รับเงิน", "รับจ้างได้"
-    ]
-    for kw in income_keywords:
-        if kw in lower:
-            item_name = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.)?$', '', clean).strip()
-            if not item_name:
-                item_name = clean
-            return {
-                "is_record": True,
-                "type": "income",
-                "item": item_name.strip(),
-                "amount": amount,
-                "category": "รายได้/ลูกหลานให้"
-            }
+    # Rule 1: Income patterns (คนอื่นให้/โอนมาให้เรา)
+    is_income = (
+        re.search(r'(?:โอนมา|โอนเข้า|เงินเข้า|คืนเงิน)', lower) or
+        re.search(r'(?:ลูก|หลาน|เพื่อน|พี่|น้อง|ป้า|ลุง|น้า|อา|แม่|พ่อ|แฟน|คน|เค้า|เขา|ลูกค้า)โอน(?:ให้|มา)?', lower) or
+        re.search(r'(?:ลูก|หลาน|เพื่อน|พี่|น้อง|ป้า|ลุง|น้า|อา|แม่|พ่อ|แฟน|คน)ให้', lower) or
+        any(kw in lower for kw in ["ได้เงิน", "ได้มา", "เงินเดือน", "บำนาญ", "เบี้ยคนชรา", "เบี้ยผู้สูงอายุ", "ขายได้", "ขายของได้", "รับเงิน", "รับจ้าง", "ปันผล"])
+    )
 
-    # Rule: Expense keywords
-    expense_keywords = [
-        "ซื้อ", "จ่าย", "ค่า", "กิน", "เติม", "ทำบุญ", "ถวาย",
-        "กับข้าว", "ค่ายา", "ค่ารถ", "ค่าไฟ", "ค่าน้ำ", "ค่าหมอ", "กาแฟ"
-    ]
-    for kw in expense_keywords:
-        if kw in lower:
-            item_name = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.)?$', '', clean).strip()
-            if not item_name:
-                item_name = clean
-            
-            category = "ทั่วไป"
-            if any(k in lower for k in ["กับข้าว", "กิน", "กาแฟ", "ก๋วยเตี๋ยว", "อาหาร"]):
-                category = "อาหาร"
-            elif any(k in lower for k in ["ยา", "หมอ", "โรงพยาบาล"]):
-                category = "สุขภาพ/ยา"
-            elif any(k in lower for k in ["รถ", "น้ำมัน", "เดินทาง", "แท็กซี่"]):
-                category = "เดินทาง"
-            elif any(k in lower for k in ["ทำบุญ", "ถวาย", "วัด"]):
-                category = "ทำบุญ"
+    if is_income:
+        item_name = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.)?$', '', clean).strip()
+        if not item_name:
+            item_name = clean
+        return {
+            "is_record": True,
+            "type": "income",
+            "item": item_name.strip(),
+            "amount": amount,
+            "category": "รายได้/มีคนให้"
+        }
 
-            return {
-                "is_record": True,
-                "type": "expense",
-                "item": item_name.strip(),
-                "amount": amount,
-                "category": category
-            }
+    # Rule 2: Expense patterns (ซื้อ จ่าย โอนออกไป)
+    is_expense = (
+        re.search(r'^โอนให้|^โอนไป|โอนค่า', lower) or
+        any(kw in lower for kw in [
+            "ซื้อ", "จ่าย", "ค่า", "กิน", "เติม", "ทำบุญ", "ถวาย",
+            "กับข้าว", "ค่ายา", "ค่ารถ", "ค่าไฟ", "ค่าน้ำ", "ค่าหมอ", "กาแฟ", "ก๋วยเตี๋ยว"
+        ])
+    )
+
+    if is_expense:
+        item_name = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.)?$', '', clean).strip()
+        if not item_name:
+            item_name = clean
+        
+        category = "ทั่วไป"
+        if any(k in lower for k in ["กับข้าว", "กิน", "กาแฟ", "ก๋วยเตี๋ยว", "อาหาร"]):
+            category = "อาหาร"
+        elif any(k in lower for k in ["ยา", "หมอ", "โรงพยาบาล"]):
+            category = "สุขภาพ/ยา"
+        elif any(k in lower for k in ["รถ", "น้ำมัน", "เดินทาง", "แท็กซี่"]):
+            category = "เดินทาง"
+        elif any(k in lower for k in ["ทำบุญ", "ถวาย", "วัด"]):
+            category = "ทำบุญ"
+
+        return {
+            "is_record": True,
+            "type": "expense",
+            "item": item_name.strip(),
+            "amount": amount,
+            "category": category
+        }
 
     return None
 
@@ -135,12 +140,16 @@ def parse_financial_text_gemini(text: str) -> Optional[Dict[str, Any]]:
 วิเคราะห์ข้อความภาษาไทยนี้ว่าเป็นการ 'บันทึกรายรับ' หรือ 'บันทึกรายจ่าย' หรือไม่:
 ข้อความ: "{clean_text}"
 
+หลักการแยกแยะ:
+- หากมีคนให้เงินหรือโอนเงินเข้ามา (เช่น "เพื่อนโอนให้ 2000", "ลูกโอนให้ 500", "ป้าให้ 300", "เงินเข้า", "ได้เงิน") ให้ตอบ type: "income" (รายรับ)
+- หากเป็นการจ่ายเงิน ซื้อของ หรือโอนเงินออกไป (เช่น "โอนให้เพื่อน 500", "โอนค่าน้ำ", "ซื้อของ", "กินข้าว") ให้ตอบ type: "expense" (รายจ่าย)
+
 ถ้าใช่:
 - "is_record": true
 - "type": "expense" หรือ "income"
 - "item": ชื่อรายการสั้นๆ
 - "amount": จำนวนเงิน float
-- "category": หมวดหมู่ (อาหาร, สุขภาพ/ยา, เดินทาง, ของใช้, รายได้, อื่นๆ)
+- "category": หมวดหมู่ (อาหาร, สุขภาพ/ยา, เดินทาง, ของใช้, รายได้/มีคนให้, อื่นๆ)
 ถ้าไม่ใช่:
 - "is_record": false
 
