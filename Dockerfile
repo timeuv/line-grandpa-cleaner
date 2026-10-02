@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up user 1000 (Required for Hugging Face Spaces)
+# Set up user 1000
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
@@ -17,8 +17,11 @@ ENV HOME=/home/user \
 
 WORKDIR $HOME/app
 
-# Pre-install PyTorch CPU to optimize image build time and size
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Upgrade pip and build tools first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel flit_core
+
+# Install PyTorch CPU with extra-index-url (keeps pypi.org active for build dependencies)
+RUN pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Copy requirements and install dependencies
 COPY --chown=user requirements.txt .
