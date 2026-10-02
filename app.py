@@ -228,7 +228,7 @@ async def home():
     </head>
     <body>
         <div class="card">
-            <h1>🌸 บอทหลานลบข้อความให้คุณตา</h1>
+            <h1>🌸 บอทหลานช่วยลบข้อความในรูปภาพ</h1>
             <div class="badge">{status_text}</div>
             
             <div class="info-item">
@@ -246,7 +246,7 @@ async def home():
 
             <div class="info-item">
                 <strong>วิธีใช้งาน:</strong>
-                <div>คุณตาส่งรูปภาพเข้ามาใน LINE ➡️ บอทตรวจจับข้อความและลบด้วย AI LaMa ➡️ ส่งรูปสะอาดกลับหาคุณตาทันที ❤️</div>
+                <div>ส่งรูปภาพเข้ามาใน LINE ➡️ บอทตรวจจับข้อความและลบให้เนียนกริบ ➡️ ส่งรูปสะอาดกลับมาให้ทันที ❤️</div>
             </div>
 
             <div class="footer">
@@ -360,7 +360,7 @@ async def line_webhook(
             # 4. Other types (audio, video, etc.)
             else:
                 reply_line_messages(reply_token, [
-                    {"type": "text", "text": "คุณตาส่งรูปภาพที่ต้องการให้หลานลบข้อความมาได้เลยนะคร้าบผม หลานรอทำให้ครับ ❤️"}
+                    {"type": "text", "text": "ส่งรูปภาพที่ต้องการให้หลานลบข้อความมาได้เลยนะคร้าบผม หลานรอทำให้ครับ ❤️"}
                 ])
 
     return {"status": "ok"}
