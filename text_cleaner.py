@@ -77,10 +77,77 @@ def get_lama_model():
             _lama_model = False
     return _lama_model
 
+def generate_cloud_text_mask(input_image_path: str, temp_mask_path: str) -> bool:
+    """
+    Uses Gemini 3.5 Flash Lite (Cloud AI, 0 local RAM) to detect all text boxes
+    and creates a binary mask for SnapEdit.
+    Returns True if text was detected, False if no text was found.
+    """
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_key:
+        print("[Mask AI] No GEMINI_API_KEY available. Falling back to local OCR mask...")
+        mask = generate_auto_text_mask(input_image_path, dilation_px=12)
+        if np.count_nonzero(mask) == 0:
+            return False
+        Image.fromarray(mask).save(temp_mask_path)
+        return True
+
+    try:
+        import re
+        import json
+        import google.generativeai as genai
+        from PIL import ImageDraw
+
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel("gemini-3.5-flash-lite")
+
+        pil_img = Image.open(input_image_path).convert("RGB")
+        w, h = pil_img.size
+
+        prompt = """Locate all text, words, captions, or typography overlaid on this image.
+Return ONLY a valid JSON array of objects where each item has "box_2d": [ymin, xmin, ymax, xmax] (normalized from 0 to 1000) and "label": the text.
+If there is NO text at all, return []."""
+
+        res = model.generate_content([prompt, pil_img])
+        m = re.search(r"\[.*\]", res.text, re.DOTALL)
+        boxes = json.loads(m.group(0)) if m else []
+
+        if not boxes:
+            print("[Mask AI] No text detected in this image.")
+            return False
+
+        print(f"[Mask AI] Detected {len(boxes)} text region(s):")
+        mask = Image.new("L", (w, h), 0)
+        draw = ImageDraw.Draw(mask)
+        padding = 12
+
+        for item in boxes:
+            box = item.get("box_2d")
+            if not box or len(box) != 4:
+                continue
+            ymin, xmin, ymax, xmax = box
+            top = max(0, int(ymin * h / 1000) - padding)
+            left = max(0, int(xmin * w / 1000) - padding)
+            bottom = min(h, int(ymax * h / 1000) + padding)
+            right = min(w, int(xmax * w / 1000) + padding)
+            draw.rectangle([left, top, right, bottom], fill=255)
+            print(f"  - Region: [{left}, {top}, {right}, {bottom}] -> '{item.get('label')}'")
+
+        mask.save(temp_mask_path)
+        return True
+
+    except Exception as e:
+        print(f"[Mask AI Error] {e}. Trying local fallback mask...")
+        mask = generate_auto_text_mask(input_image_path, dilation_px=12)
+        if np.count_nonzero(mask) == 0:
+            return False
+        Image.fromarray(mask).save(temp_mask_path)
+        return True
+
 def generate_auto_text_mask(input_image_path: str, dilation_px: int = 10) -> np.ndarray:
     """
     Detects all text regions (Thai/English) and returns a binary mask
-    covering the text strokes and drop shadows.
+    covering the text strokes and drop shadows (if local EasyOCR is available).
     """
     pil_img = Image.open(input_image_path).convert('RGB')
     width, height = pil_img.size
@@ -103,24 +170,35 @@ def generate_auto_text_mask(input_image_path: str, dilation_px: int = 10) -> np.
     return mask
 
 # =========================================================================
-# ENGINE 1: SnapEdit Text Removal API (Official Cloud AI - 1 Credit)
+# ENGINE 1: SnapEdit Text Removal API (Cloud AI + Cloud Mask - 1 Credit)
 # =========================================================================
 def remove_text_snapedit(input_image_path: str, output_image_path: str, api_key: str = None) -> bool:
     """
-    Uses SnapEdit Cloud AI to automatically detect and remove text.
-    100% Cloud-based: Uses exactly 1 credit per image, no local RAM/PyTorch needed.
+    Uses Gemini Cloud AI for text detection + SnapEdit Cloud AI for text removal.
+    100% Cloud-based: Uses exactly 1 SnapEdit credit, ~50MB RAM, 0 PyTorch in RAM.
     """
+    import uuid
     key = api_key or os.getenv("SNAPEDIT_API_KEY", "")
     if not key:
         print("[SnapEdit] No API Key provided.")
         return False
 
+    temp_mask_path = str(Path(output_image_path).parent / f"temp_mask_{uuid.uuid4().hex[:8]}.png")
+
     try:
+        # Step 1: Detect text coordinates via Gemini Cloud AI (Free, 0 RAM)
+        has_text = generate_cloud_text_mask(input_image_path, temp_mask_path)
+        if not has_text:
+            print("[SnapEdit] No text detected in image. Keeping original.")
+            Image.open(input_image_path).save(output_image_path, "JPEG", quality=95)
+            return True
+
+        # Step 2: Inpaint and remove text via SnapEdit API
         from snapedit import SnapEdit
         client = SnapEdit(api_key=key)
 
-        print("[SnapEdit] Calling SnapEdit Cloud AI remove.text (1 credit)...")
-        res = client.remove.text(input_image_path)
+        print("[SnapEdit] Calling SnapEdit remove.text API (1 credit)...")
+        res = client.remove.text(input_image=input_image_path, input_mask=temp_mask_path)
 
         if res.data and res.data[0].url:
             cleaned_url = res.data[0].url
@@ -136,6 +214,12 @@ def remove_text_snapedit(input_image_path: str, output_image_path: str, api_key:
     except Exception as e:
         print(f"[SnapEdit Exception] {e}")
         return False
+    finally:
+        if os.path.exists(temp_mask_path):
+            try:
+                os.remove(temp_mask_path)
+            except Exception:
+                pass
 
 # =========================================================================
 # ENGINE 2: ClipDrop Text Removal API (Studio Quality, Commercial SOTA)
