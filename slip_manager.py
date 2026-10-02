@@ -103,29 +103,25 @@ def call_gemini_vision(image_path: str, prompt: str) -> Optional[str]:
             img.save(buf, format="JPEG", quality=85)
             b64_image = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        url = f"{GEMINI_REST_URL}?key={key}"
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64_image}}
-                ]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json"
-            }
-        }
+        import time
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
-        res = requests.post(url, json=payload, timeout=25)
-        if res.status_code == 200:
-            candidates = res.json().get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "")
-        else:
-            print(f"[SlipManager] Gemini API Error {res.status_code}: {res.text}")
+        for m_name in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={key}"
+            for attempt in range(2):
+                res = requests.post(url, json=payload, timeout=25)
+                if res.status_code == 200:
+                    candidates = res.json().get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            return parts[0].get("text", "")
+                elif res.status_code == 429:
+                    print(f"[SlipManager] Model {m_name} rate limit (429). Retrying in 2s...")
+                    time.sleep(2)
+                else:
+                    print(f"[SlipManager] {m_name} Error {res.status_code}: {res.text}")
+                    break
     except Exception as e:
         print(f"[SlipManager] Exception calling Gemini Vision: {e}")
 

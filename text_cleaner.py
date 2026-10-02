@@ -98,19 +98,24 @@ def generate_cloud_text_mask(input_image_path: str, temp_mask_path: str) -> bool
         import google.generativeai as genai
         from PIL import ImageDraw
 
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-3.5-flash-lite")
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+        boxes = []
+        import time
 
-        pil_img = Image.open(input_image_path).convert("RGB")
-        w, h = pil_img.size
-
-        prompt = """Locate all text, words, captions, or typography overlaid on this image.
-Return ONLY a valid JSON array of objects where each item has "box_2d": [ymin, xmin, ymax, xmax] (normalized from 0 to 1000) and "label": the text.
-If there is NO text at all, return []."""
-
-        res = model.generate_content([prompt, pil_img])
-        m = re.search(r"\[.*\]", res.text, re.DOTALL)
-        boxes = json.loads(m.group(0)) if m else []
+        for m_name in models_to_try:
+            for attempt in range(2):
+                try:
+                    model = genai.GenerativeModel(m_name)
+                    res = model.generate_content([prompt, pil_img])
+                    m = re.search(r"\[.*\]", res.text, re.DOTALL)
+                    boxes = json.loads(m.group(0)) if m else []
+                    if boxes:
+                        break
+                except Exception as ex:
+                    print(f"[Mask AI] {m_name} attempt {attempt+1} error: {ex}")
+                    time.sleep(2)
+            if boxes:
+                break
 
         if not boxes:
             print("[Mask AI] No text detected in this image.")

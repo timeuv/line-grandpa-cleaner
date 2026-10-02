@@ -217,32 +217,29 @@ def analyze_receipt_image(image_path: str) -> Optional[Dict[str, Any]]:
   "category": "หมวดหมู่"
 }
 """
-        url = f"{GEMINI_REST_URL}?key={key}"
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64_image}}
-                ]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json"
-            }
-        }
-        res = requests.post(url, json=payload, timeout=20)
-        if res.status_code == 200:
-            candidates = res.json().get("candidates", [])
-            if candidates:
-                part_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                parsed = json.loads(part_text)
-                if parsed.get("is_receipt") and parsed.get("total_amount", 0) > 0:
-                    return {
-                        "type": "expense",
-                        "item": parsed.get("merchant", "ซื้อของตามใบเสร็จ"),
-                        "amount": float(parsed.get("total_amount")),
-                        "category": parsed.get("category", "ของใช้")
-                    }
+        import time
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+        for m_name in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={key}"
+            for attempt in range(2):
+                res = requests.post(url, json=payload, timeout=20)
+                if res.status_code == 200:
+                    candidates = res.json().get("candidates", [])
+                    if candidates:
+                        part_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                        parsed = json.loads(part_text)
+                        if parsed.get("is_receipt") and parsed.get("total_amount", 0) > 0:
+                            return {
+                                "type": "expense",
+                                "item": parsed.get("merchant", "ซื้อของตามใบเสร็จ"),
+                                "amount": float(parsed.get("total_amount")),
+                                "category": parsed.get("category", "ของใช้")
+                            }
+                elif res.status_code == 429:
+                    print(f"[ExpenseTracker] {m_name} rate limit (429). Retrying in 2s...")
+                    time.sleep(2)
+                else:
+                    break
     except Exception as e:
         print(f"[ExpenseTracker] Receipt vision error: {e}")
 
