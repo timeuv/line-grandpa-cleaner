@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import datetime
 from pathlib import Path
@@ -7,8 +8,12 @@ import requests
 
 DATA_FILE = Path(__file__).parent / "expenses.json"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+# Use the smallest, fastest free model
 MODEL_NAME = "gemini-3.5-flash-lite"
 GEMINI_REST_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
+
+# Cache pending bare number confirmations: user_id -> (amount, timestamp)
+_pending_number_confirmations: Dict[str, Tuple[float, datetime.datetime]] = {}
 
 def load_expenses() -> Dict[str, Any]:
     """Loads expense records from JSON file"""
@@ -33,49 +38,114 @@ def save_expenses(data: Dict[str, Any]):
     except Exception as e:
         print(f"[ExpenseTracker] Error saving expenses: {e}")
 
-def parse_financial_text(text: str) -> Optional[Dict[str, Any]]:
+# =========================================================================
+# 1. High-Speed Local Thai Regex & Rule Parser (0 API Cost, 0ms Latency)
+# =========================================================================
+def parse_local_thai_rules(text: str) -> Optional[Dict[str, Any]]:
     """
-    Parses user text to check if it's an income or expense statement.
-    Uses Gemini 3.5 Flash Lite for natural Thai comprehension.
+    Parses Thai text locally without calling external APIs.
+    Detects common Thai phrases used by elders:
+    - Expenses: ซื้อ, จ่าย, ค่า, กิน, เติม, ทำบุญ
+    - Income: ลูกให้, หลานให้, ได้เงิน, บำนาญ, ขาย, เบี้ย
     """
-    clean_text = text.strip()
-    if not clean_text or len(clean_text) < 2:
+    clean = text.strip()
+    
+    # 1. Extract amount from string (e.g., "120", "120 บาท", "1,500.50")
+    # Matches numbers with optional commas and decimals
+    num_match = re.search(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.|บ)?', clean)
+    if not num_match:
+        return None
+    
+    try:
+        raw_num = num_match.group(1).replace(",", "")
+        amount = float(raw_num)
+        if amount <= 0:
+            return None
+    except Exception:
         return None
 
-    # Check query commands first (handled separately)
-    lower = clean_text.lower()
-    if any(q in lower for q in ["สรุปรายรับ", "สรุปรายจ่าย", "ดูรายรับ", "ดูรายจ่าย", "ยอดเงินวันนี้", "ใช้ไปเท่าไหร่", "วันนี้ใช้", "สรุปเงิน", "ดูยอดเงิน", "สมุดเงิน"]):
-        return {"action": "summary"}
+    # Check if text is ONLY a bare number (e.g. "120", "50 บาท")
+    # If the rest of the text after removing the number and "บาท" is empty:
+    stripped_text = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.|บ)?', '', clean).strip()
+    if not stripped_text:
+        return {"action": "ask_bare_number", "amount": amount}
 
-    if any(q in lower for q in ["ลบรายการล่าสุด", "ลบล่าสุด", "ยกเลิกรายการ"]):
-        return {"action": "undo"}
+    lower = clean.lower()
 
+    # Rule: Income keywords
+    income_keywords = [
+        "ลูกให้", "หลานให้", "ได้เงิน", "ได้มา", "เงินเดือน", "บำนาญ",
+        "เบี้ยคนชรา", "เบี้ยผู้สูงอายุ", "ขายได้", "ขายของได้", "รับเงิน", "รับจ้างได้"
+    ]
+    for kw in income_keywords:
+        if kw in lower:
+            item_name = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.)?$', '', clean).strip()
+            if not item_name:
+                item_name = clean
+            return {
+                "is_record": True,
+                "type": "income",
+                "item": item_name.strip(),
+                "amount": amount,
+                "category": "รายได้/ลูกหลานให้"
+            }
+
+    # Rule: Expense keywords
+    expense_keywords = [
+        "ซื้อ", "จ่าย", "ค่า", "กิน", "เติม", "ทำบุญ", "ถวาย",
+        "กับข้าว", "ค่ายา", "ค่ารถ", "ค่าไฟ", "ค่าน้ำ", "ค่าหมอ", "กาแฟ"
+    ]
+    for kw in expense_keywords:
+        if kw in lower:
+            item_name = re.sub(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:บาท|บ\.)?$', '', clean).strip()
+            if not item_name:
+                item_name = clean
+            
+            category = "ทั่วไป"
+            if any(k in lower for k in ["กับข้าว", "กิน", "กาแฟ", "ก๋วยเตี๋ยว", "อาหาร"]):
+                category = "อาหาร"
+            elif any(k in lower for k in ["ยา", "หมอ", "โรงพยาบาล"]):
+                category = "สุขภาพ/ยา"
+            elif any(k in lower for k in ["รถ", "น้ำมัน", "เดินทาง", "แท็กซี่"]):
+                category = "เดินทาง"
+            elif any(k in lower for k in ["ทำบุญ", "ถวาย", "วัด"]):
+                category = "ทำบุญ"
+
+            return {
+                "is_record": True,
+                "type": "expense",
+                "item": item_name.strip(),
+                "amount": amount,
+                "category": category
+            }
+
+    return None
+
+# =========================================================================
+# 2. Gemini 3.5 Flash Lite Fallback for complex sentences
+# =========================================================================
+def parse_financial_text_gemini(text: str) -> Optional[Dict[str, Any]]:
+    """Fallback to Gemini 3.5 Flash Lite for natural sentences that regex didn't catch"""
     key = os.getenv("GEMINI_API_KEY", GEMINI_KEY)
     if not key:
         return None
 
+    clean_text = text.strip()
     prompt = f"""
-วิเคราะห์ข้อความภาษาไทยนี้ว่าเป็นการ 'บันทึกรายรับ' หรือ 'บันทึกรายจ่าย' ในชีวิตประจำวันหรือไม่:
+วิเคราะห์ข้อความภาษาไทยนี้ว่าเป็นการ 'บันทึกรายรับ' หรือ 'บันทึกรายจ่าย' หรือไม่:
 ข้อความ: "{clean_text}"
 
-เงื่อนไข:
-1. หากเป็นข้อความบันทึกการใช้เงินหรือรับเงิน (เช่น "ซื้อกับข้าว 120", "จ่ายค่ายา 350", "ลูกให้เงิน 1000", "ค่ากาแฟ 50", "เติมน้ำมัน 500", "ขายของได้ 300", "กินก๋วยเตี๋ยว 60"):
-   - "is_record": true
-   - "type": "expense" (รายจ่าย/ซื้อของ/จ่ายเงิน) หรือ "income" (รายรับ/ได้เงิน/ลูกให้)
-   - "item": ชื่อรายการสั้นๆ เข้าใจง่าย (เช่น "ซื้อกับข้าว", "ค่ายา", "ลูกให้เงิน", "ค่ากาแฟ")
-   - "amount": จำนวนเงินเป็นตัวเลข (float เช่น 120.0, 350.0)
-   - "category": หมวดหมู่ เช่น "อาหาร", "สุขภาพ/ยา", "เดินทาง", "ของใช้", "รายได้", "ทำบุญ", "อื่นๆ"
-2. หากเป็นข้อความทั่วไปที่ไม่ใช่การบันทึกรายรับรายจ่าย (เช่น "สวัสดี", "ขอบคุณ", "สบายดีไหม", "เงินช่วยเหลืองานศพ..."):
-   - "is_record": false
+ถ้าใช่:
+- "is_record": true
+- "type": "expense" หรือ "income"
+- "item": ชื่อรายการสั้นๆ
+- "amount": จำนวนเงิน float
+- "category": หมวดหมู่ (อาหาร, สุขภาพ/ยา, เดินทาง, ของใช้, รายได้, อื่นๆ)
+ถ้าไม่ใช่:
+- "is_record": false
 
 ตอบเป็น JSON เท่านั้น:
-{{
-  "is_record": true/false,
-  "type": "expense" หรือ "income",
-  "item": "ชื่อรายการ",
-  "amount": 120.0,
-  "category": "หมวดหมู่"
-}}
+{{"is_record": true/false, "type": "expense/income", "item": "...", "amount": 100.0, "category": "..."}}
 """
     try:
         url = f"{GEMINI_REST_URL}?key={key}"
@@ -95,15 +165,15 @@ def parse_financial_text(text: str) -> Optional[Dict[str, Any]]:
                 if parsed.get("is_record") and parsed.get("amount", 0) > 0:
                     return parsed
     except Exception as e:
-        print(f"[ExpenseTracker] Parsing error: {e}")
+        print(f"[ExpenseTracker] Gemini parser error: {e}")
 
     return None
 
+# =========================================================================
+# 3. Vision Receipt / Bill Parser (Gemini 3.5 Flash Lite)
+# =========================================================================
 def analyze_receipt_image(image_path: str) -> Optional[Dict[str, Any]]:
-    """
-    Analyzes an image to see if it's a store receipt or bill (not a bank transfer slip).
-    If it is, extracts the merchant/item and total amount spent.
-    """
+    """Analyzes image with Gemini 3.5 Flash Lite to detect receipts/bills"""
     key = os.getenv("GEMINI_API_KEY", GEMINI_KEY)
     if not key:
         return None
@@ -169,6 +239,9 @@ def analyze_receipt_image(image_path: str) -> Optional[Dict[str, Any]]:
 
     return None
 
+# =========================================================================
+# 4. Storage & Formatting
+# =========================================================================
 def add_record(entry_type: str, item: str, amount: float, category: str = "ทั่วไป") -> Dict[str, Any]:
     """Adds a record and returns summary for today"""
     data = load_expenses()
@@ -176,7 +249,7 @@ def add_record(entry_type: str, item: str, amount: float, category: str = "ท�
     
     new_entry = {
         "id": len(data["records"]) + 1,
-        "type": entry_type,  # 'income' or 'expense'
+        "type": entry_type,
         "item": item,
         "amount": round(float(amount), 2),
         "category": category,
@@ -277,22 +350,27 @@ def format_daily_summary_message() -> str:
     
     return "\n".join(lines)
 
-def handle_expense_text(text: str) -> Optional[str]:
+def handle_expense_text(text: str, user_id: str = "") -> Optional[str]:
     """
-    Processes incoming text for expense tracking:
-    - If it's a financial entry -> adds and returns confirmation.
-    - If it's a summary request -> returns daily summary.
-    - If it's undo -> removes last entry.
-    - If not financial -> returns None.
+    Unified text handler:
+    1. Checks commands (summary, undo)
+    2. Checks pending bare numbers confirmation (if user recently sent a number)
+    3. Uses Fast Local Thai Rules (0 API cost, 0ms latency)
+    4. If bare number -> Asks user whether it is income or expense
+    5. Falls back to Gemini 3.5 Flash Lite if natural text not matched locally
     """
-    res = parse_financial_text(text)
-    if not res:
+    clean_text = text.strip()
+    if not clean_text:
         return None
 
-    if res.get("action") == "summary":
+    lower = clean_text.lower()
+
+    # 1. Summary Query
+    if any(q in lower for q in ["สรุปรายรับ", "สรุปรายจ่าย", "ดูรายรับ", "ดูรายจ่าย", "ยอดเงินวันนี้", "ใช้ไปเท่าไหร่", "วันนี้ใช้", "สรุปเงิน", "ดูยอดเงิน", "สมุดเงิน"]):
         return format_daily_summary_message()
 
-    if res.get("action") == "undo":
+    # 2. Undo
+    if any(q in lower for q in ["ลบรายการล่าสุด", "ลบล่าสุด", "ยกเลิกรายการ"]):
         last = undo_last_record()
         if last:
             amt_str = f"{last['amount']:,.0f}" if last['amount'] == int(last['amount']) else f"{last['amount']:,.2f}"
@@ -300,23 +378,65 @@ def handle_expense_text(text: str) -> Optional[str]:
         else:
             return "ยังไม่มีรายการให้ลบครับผม 😊"
 
-    if res.get("is_record"):
+    # 3. Check if user is replying to a pending bare number
+    if user_id and user_id in _pending_number_confirmations:
+        pending_amt, ts = _pending_number_confirmations[user_id]
+        # Valid within 3 minutes
+        if (datetime.datetime.now() - ts).total_seconds() <= 180:
+            del _pending_number_confirmations[user_id]
+            is_income = any(w in lower for w in ["รับ", "รายรับ", "ได้", "บำนาญ", "ลูกให้"])
+            entry_type = "income" if is_income else "expense"
+            item_name = clean_text if len(clean_text) > 2 else ("รายรับ" if is_income else "รายจ่ายทั่วไป")
+            entry = add_record(
+                entry_type=entry_type,
+                item=item_name,
+                amount=pending_amt,
+                category="ทั่วไป"
+            )
+            return format_record_success_message(entry)
+        else:
+            del _pending_number_confirmations[user_id]
+
+    # 4. Fast Local Thai Rules (0 API Cost)
+    local_res = parse_local_thai_rules(clean_text)
+    if local_res:
+        # If bare number, ask user politely
+        if local_res.get("action") == "ask_bare_number":
+            amt = local_res.get("amount", 0.0)
+            amt_str = f"{amt:,.0f}" if amt == int(amt) else f"{amt:,.2f}"
+            if user_id:
+                _pending_number_confirmations[user_id] = (amt, datetime.datetime.now())
+            return (
+                f"ยอด **{amt_str} บาท** นี้ เป็น 'รายรับ' หรือ 'รายจ่าย' ครับผม?\n\n"
+                f"👉 ตาพิมพ์บอกหลานสั้นๆ ได้เลยนะคร้าบ เช่น:\n"
+                f"- 'รายจ่าย' หรือบอกว่าซื้ออะไร เช่น 'ซื้อกับข้าว'\n"
+                f"- 'รายรับ' หรือ 'ลูกให้' ครับผม ❤️"
+            )
+        
+        if local_res.get("is_record"):
+            entry = add_record(
+                entry_type=local_res.get("type", "expense"),
+                item=local_res.get("item", "รายการทั่วไป"),
+                amount=local_res.get("amount", 0.0),
+                category=local_res.get("category", "ทั่วไป")
+            )
+            return format_record_success_message(entry)
+
+    # 5. Gemini 3.5 Flash Lite Fallback for complex wording
+    gemini_res = parse_financial_text_gemini(clean_text)
+    if gemini_res and gemini_res.get("is_record"):
         entry = add_record(
-            entry_type=res.get("type", "expense"),
-            item=res.get("item", "รายการทั่วไป"),
-            amount=res.get("amount", 0.0),
-            category=res.get("category", "ทั่วไป")
+            entry_type=gemini_res.get("type", "expense"),
+            item=gemini_res.get("item", "รายการทั่วไป"),
+            amount=gemini_res.get("amount", 0.0),
+            category=gemini_res.get("category", "ทั่วไป")
         )
         return format_record_success_message(entry)
 
     return None
 
 def handle_receipt_image(image_path: str) -> Optional[str]:
-    """
-    Processes image as receipt/bill:
-    If it is a receipt, adds as expense and returns confirmation message.
-    If not, returns None.
-    """
+    """Processes store receipt / bill image using Gemini 3.5 Flash Lite"""
     receipt = analyze_receipt_image(image_path)
     if receipt:
         entry = add_record(
