@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: line-grandpa-cleaner
+    runtime: docker
+    region: singapore
+    plan: free
+    envVars:
+      - key: LINE_CHANNEL_SECRET
+        value: 352a8a16dfba46929dc0e4a5fb3ce3e9
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        value: /G1jqQxv4/Peq09wSHW33Bw7QfWLwNDdJX7rL/REnjALi8yrtR9Dt+pIsjaEHOaWHaOqlyp6tOr3++FR4ZDSKkpf4DJCiloHvtXQXlbFH19y8bgDb0q3ys7Pladz5Dus+bJFLKEST5FCSIXZbpHrtQdB04t89/1O/w1cDnyilFU=
+      - key: SNAPEDIT_API_KEY
+        value: sk-snap-xnFMmIV4PT0oIHY2xJwf5z0ABTElxtnbUf9QLJq7Pyg
+      - key: BASE_URL
+        value: https://line-grandpa-cleaner.onrender.com
+      - key: TEXT_REMOVAL_ENGINE
+        value: snapedit
