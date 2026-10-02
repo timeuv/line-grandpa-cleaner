@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir torch torchvision --extra-index-url https://downl
 
 # Copy requirements and install dependencies
 COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Copy all application code
 COPY --chown=user . .
