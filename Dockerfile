@@ -20,12 +20,9 @@ WORKDIR $HOME/app
 # Upgrade pip and build tools first
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel flit_core
 
-# Install PyTorch CPU with extra-index-url (keeps pypi.org active for build dependencies)
-RUN pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-
 # Copy requirements and install dependencies
 COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all application code
 COPY --chown=user . .

@@ -2,7 +2,6 @@ import os
 import cv2
 import requests
 import numpy as np
-import torch
 from pathlib import Path
 from PIL import Image
 
@@ -16,6 +15,11 @@ class SafeSimpleLama:
     on both macOS CPU/MPS and Linux/CUDA without PyTorch CUDA backend crashes.
     """
     def __init__(self, device=None):
+        try:
+            import torch
+        except ImportError:
+            raise RuntimeError("PyTorch is not installed in this environment.")
+
         if device is None:
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -34,6 +38,7 @@ class SafeSimpleLama:
         self.model.to(device)
 
     def __call__(self, image: Image.Image, mask: Image.Image) -> Image.Image:
+        import torch
         from simple_lama_inpainting.utils import prepare_img_and_mask
         orig_w, orig_h = image.size
         img_t, mask_t = prepare_img_and_mask(image, mask, self.device)
@@ -46,7 +51,7 @@ class SafeSimpleLama:
             return res_img.crop((0, 0, orig_w, orig_h))
 
 def get_ocr_reader():
-    """Lazy load EasyOCR reader with Thai and English support"""
+    """Lazy load EasyOCR reader with Thai and English support (optional)"""
     global _ocr_reader
     if _ocr_reader is None:
         try:
@@ -55,12 +60,12 @@ def get_ocr_reader():
             _ocr_reader = easyocr.Reader(['th', 'en'], gpu=False)
             print("[AI Local] EasyOCR initialized successfully.")
         except Exception as e:
-            print(f"[AI Warning] EasyOCR failed to load: {e}")
+            print(f"[AI Warning] EasyOCR not available or failed to load: {e}")
             _ocr_reader = False
     return _ocr_reader
 
 def get_lama_model():
-    """Lazy load SafeSimpleLama inpainting model"""
+    """Lazy load SafeSimpleLama inpainting model (optional)"""
     global _lama_model
     if _lama_model is None:
         try:
@@ -68,7 +73,7 @@ def get_lama_model():
             _lama_model = SafeSimpleLama()
             print("[AI Local] SafeSimpleLama model loaded successfully.")
         except Exception as e:
-            print(f"[AI Warning] SafeSimpleLama failed to load: {e}")
+            print(f"[AI Warning] SafeSimpleLama not available or failed to load: {e}")
             _lama_model = False
     return _lama_model
 
@@ -98,11 +103,12 @@ def generate_auto_text_mask(input_image_path: str, dilation_px: int = 10) -> np.
     return mask
 
 # =========================================================================
-# ENGINE 1: SnapEdit Text Removal API (Official SDK with Auto Masking)
+# ENGINE 1: SnapEdit Text Removal API (Official Cloud AI - 1 Credit)
 # =========================================================================
 def remove_text_snapedit(input_image_path: str, output_image_path: str, api_key: str = None) -> bool:
     """
-    Uses SnapEdit API via official SDK with automatic OCR mask generation.
+    Uses SnapEdit Cloud AI to automatically detect and remove text.
+    100% Cloud-based: Uses exactly 1 credit per image, no local RAM/PyTorch needed.
     """
     key = api_key or os.getenv("SNAPEDIT_API_KEY", "")
     if not key:
@@ -113,25 +119,8 @@ def remove_text_snapedit(input_image_path: str, output_image_path: str, api_key:
         from snapedit import SnapEdit
         client = SnapEdit(api_key=key)
 
-        print("[SnapEdit] Step 1: Generating text mask via OCR...")
-        mask = generate_auto_text_mask(input_image_path, dilation_px=12)
-
-        if np.count_nonzero(mask) == 0:
-            print("[SnapEdit] No text detected in image. Keeping original.")
-            Image.open(input_image_path).save(output_image_path, "JPEG", quality=95)
-            return True
-
-        temp_mask_path = str(Path(output_image_path).parent / f"temp_mask_{os.path.basename(output_image_path)}.png")
-        Image.fromarray(mask).save(temp_mask_path)
-
-        print("[SnapEdit] Step 2: Calling SnapEdit remove.text API...")
-        res = client.remove.text(input_image=input_image_path, input_mask=temp_mask_path)
-
-        # Cleanup temp mask
-        try:
-            os.remove(temp_mask_path)
-        except Exception:
-            pass
+        print("[SnapEdit] Calling SnapEdit Cloud AI remove.text (1 credit)...")
+        res = client.remove.text(input_image_path)
 
         if res.data and res.data[0].url:
             cleaned_url = res.data[0].url
