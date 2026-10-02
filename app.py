@@ -17,6 +17,7 @@ from dotenv import load_dotenv, dotenv_values
 from text_cleaner import remove_text_from_image
 from conversation_helper import get_grandson_reply, get_sticker_reply
 import slip_manager
+import expense_tracker
 
 # Load .env file if present
 load_dotenv()
@@ -244,12 +245,14 @@ async def home():
                 <div>Public BASE_URL: {'✅ ' + base_url if base_url else '❌ ยังไม่ได้ใส่'}</div>
                 <div>ลบตัวหนังสือในรูป (SnapEdit): {'✅ พร้อมใช้งาน' if os.getenv('SNAPEDIT_API_KEY') else '⚪ โหมด Local AI'}</div>
                 <div>ระบบอ่านสลิปเงินช่วยเหลือ (Gemini): {'✅ เปิดใช้งาน (Gemini 3.5 Flash Lite)' if os.getenv('GEMINI_API_KEY') else '❌ ยังไม่ได้ใส่'}</div>
+                <div>สมุดบันทึกรายรับ-รายจ่าย (LINE): ✅ พร้อมใช้งานในแชททันที</div>
             </div>
 
             <div class="info-item">
-                <strong>วิธีใช้งาน:</strong>
+                <strong>วิธีใช้งานง่ายๆ ใน LINE สำหรับตา:</strong>
                 <div>🌸 <strong>รูปลบข้อความ</strong>: ส่งรูปดอกไม้/วิว/สวัสดี ➡️ ลบข้อความเนียนกริบ ส่งรูปสะอาดกลับทันที</div>
-                <div>📋 <strong>สลิปเงินช่วยเหลือ</strong>: พิมพ์หัวข้องาน (เช่น 'เงินช่วยเหลืองานศพ...') แล้วส่งรูปสลิป ➡️ บอทสรุปรายชื่อ 1, 2, 3 พร้อมยอดรวมให้ก๊อปปี้ส่งต่อได้เลย ❤️</div>
+                <div>💰 <strong>บันทึกรายรับรายจ่าย</strong>: ตาแค่พิมพ์บอกหลาน เช่น <em>'ซื้อกับข้าว 120'</em>, <em>'ค่ายา 300'</em>, <em>'ลูกให้เงิน 1000'</em> หรือส่งรูปใบเสร็จ ➡️ บอทลงสมุดบันทึกและสรุปยอดทันที (พิมพ์ 'ดูยอดเงิน' เพื่อดูสรุป)</div>
+                <div>📋 <strong>สลิปเงินช่วยเหลือเพื่อน</strong>: พิมพ์หัวข้องาน (เช่น 'เงินช่วยเหลืองานศพ...') แล้วส่งรูปสลิป ➡️ บอทสรุปรายชื่อ 1, 2, 3 พร้อมยอดรวมให้ก๊อปปี้ส่งต่อได้เลย ❤️</div>
             </div>
 
             <div class="footer">
@@ -292,7 +295,23 @@ def process_image_and_reply(image_id: str, reply_token: str, chat_id: str):
     except Exception as e:
         print(f"[SlipManager Error] {e}")
 
-    # 3. Not a bank slip -> Process as greeting/nature photo text removal
+    # 2.5 Check if the image is a store receipt or bill
+    try:
+        receipt_summary = expense_tracker.handle_receipt_image(raw_img_path)
+        if receipt_summary:
+            print(f"[ExpenseTracker] Successfully processed receipt for {chat_id}")
+            reply_line_messages(reply_token, [
+                {"type": "text", "text": receipt_summary}
+            ])
+            try:
+                os.remove(raw_img_path)
+            except Exception:
+                pass
+            return
+    except Exception as e:
+        print(f"[ExpenseTracker Error] {e}")
+
+    # 3. Not a slip/receipt -> Process as greeting/nature photo text removal
     cleaned_success = remove_text_from_image(raw_img_path, cleaned_img_path)
 
     # Clean up the raw original image
@@ -369,12 +388,19 @@ async def line_webhook(
             # 2. User sends a text message
             elif msg_type == "text":
                 user_text = msg.get("text", "")
+                
+                # Check donation campaign command/topic first
                 slip_cmd_reply = slip_manager.handle_text_command(user_text, user_id=user_id)
                 if slip_cmd_reply:
                     reply_line_messages(reply_token, [{"type": "text", "text": slip_cmd_reply}])
                 else:
-                    reply_text = get_grandson_reply(user_text)
-                    reply_line_messages(reply_token, [{"type": "text", "text": reply_text}])
+                    # Check income/expense tracking
+                    expense_reply = expense_tracker.handle_expense_text(user_text)
+                    if expense_reply:
+                        reply_line_messages(reply_token, [{"type": "text", "text": expense_reply}])
+                    else:
+                        reply_text = get_grandson_reply(user_text)
+                        reply_line_messages(reply_token, [{"type": "text", "text": reply_text}])
 
             # 3. User sends a sticker
             elif msg_type == "sticker":
