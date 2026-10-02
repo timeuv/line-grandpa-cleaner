@@ -16,6 +16,7 @@ from dotenv import load_dotenv, dotenv_values
 
 from text_cleaner import remove_text_from_image
 from conversation_helper import get_grandson_reply, get_sticker_reply
+import slip_manager
 
 # Load .env file if present
 load_dotenv()
@@ -241,12 +242,14 @@ async def home():
                 <div>LINE Access Token: {'✅ ตั้งค่าแล้ว' if LINE_CHANNEL_ACCESS_TOKEN else '❌ ยังไม่ได้ใส่'}</div>
                 <div>LINE Channel Secret: {'✅ ตั้งค่าแล้ว' if LINE_CHANNEL_SECRET else '❌ ยังไม่ได้ใส่'}</div>
                 <div>Public BASE_URL: {'✅ ' + base_url if base_url else '❌ ยังไม่ได้ใส่'}</div>
-                <div>AI Gemini Key: {'✅ เปิดใช้งาน' if os.getenv('GEMINI_API_KEY') else '⚪ ใช้ระบบคำพูดสำเร็จรูปแสนอบอุ่น'}</div>
+                <div>ลบตัวหนังสือในรูป (SnapEdit): {'✅ พร้อมใช้งาน' if os.getenv('SNAPEDIT_API_KEY') else '⚪ โหมด Local AI'}</div>
+                <div>ระบบอ่านสลิปเงินช่วยเหลือ (Gemini): {'✅ เปิดใช้งาน (Gemini 3.5 Flash Lite)' if os.getenv('GEMINI_API_KEY') else '❌ ยังไม่ได้ใส่'}</div>
             </div>
 
             <div class="info-item">
                 <strong>วิธีใช้งาน:</strong>
-                <div>ส่งรูปภาพเข้ามาใน LINE ➡️ บอทตรวจจับข้อความและลบให้เนียนกริบ ➡️ ส่งรูปสะอาดกลับมาให้ทันที ❤️</div>
+                <div>🌸 <strong>รูปลบข้อความ</strong>: ส่งรูปดอกไม้/วิว/สวัสดี ➡️ ลบข้อความเนียนกริบ ส่งรูปสะอาดกลับทันที</div>
+                <div>📋 <strong>สลิปเงินช่วยเหลือ</strong>: พิมพ์หัวข้องาน (เช่น 'เงินช่วยเหลืองานศพ...') แล้วส่งรูปสลิป ➡️ บอทสรุปรายชื่อ 1, 2, 3 พร้อมยอดรวมให้ก๊อปปี้ส่งต่อได้เลย ❤️</div>
             </div>
 
             <div class="footer">
@@ -258,7 +261,7 @@ async def home():
     """
 
 def process_image_and_reply(image_id: str, reply_token: str, chat_id: str):
-    """Background processor for image inpainting to avoid LINE webhook timeout"""
+    """Background processor for image inpainting or bank slip tracking"""
     base_url = get_base_url()
     unique_id = uuid.uuid4().hex[:10]
     raw_img_path = str(STATIC_DIR / f"raw_{unique_id}.jpg")
@@ -272,7 +275,24 @@ def process_image_and_reply(image_id: str, reply_token: str, chat_id: str):
         ])
         return
 
-    # 2. Inpaint and remove text
+    # 2. Check if the image is a bank transfer slip
+    try:
+        slip_summary = slip_manager.process_slip(raw_img_path, user_id=chat_id)
+        if slip_summary:
+            print(f"[SlipManager] Successfully processed bank slip for {chat_id}")
+            reply_line_messages(reply_token, [
+                {"type": "text", "text": slip_summary}
+            ])
+            # Clean up raw image
+            try:
+                os.remove(raw_img_path)
+            except Exception:
+                pass
+            return
+    except Exception as e:
+        print(f"[SlipManager Error] {e}")
+
+    # 3. Not a bank slip -> Process as greeting/nature photo text removal
     cleaned_success = remove_text_from_image(raw_img_path, cleaned_img_path)
 
     # Clean up the raw original image
@@ -287,7 +307,7 @@ def process_image_and_reply(image_id: str, reply_token: str, chat_id: str):
         ])
         return
 
-    # 3. Construct public image URL
+    # 4. Construct public image URL
     image_url = f"{base_url}/static/clean_{unique_id}.jpg"
     print(f"[LINE Reply] Sending cleaned image back: {image_url}")
 
@@ -349,8 +369,12 @@ async def line_webhook(
             # 2. User sends a text message
             elif msg_type == "text":
                 user_text = msg.get("text", "")
-                reply_text = get_grandson_reply(user_text)
-                reply_line_messages(reply_token, [{"type": "text", "text": reply_text}])
+                slip_cmd_reply = slip_manager.handle_text_command(user_text, user_id=user_id)
+                if slip_cmd_reply:
+                    reply_line_messages(reply_token, [{"type": "text", "text": slip_cmd_reply}])
+                else:
+                    reply_text = get_grandson_reply(user_text)
+                    reply_line_messages(reply_token, [{"type": "text", "text": reply_text}])
 
             # 3. User sends a sticker
             elif msg_type == "sticker":

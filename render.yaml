@@ -15,3 +15,5 @@ services:
         value: https://line-grandpa-cleaner.onrender.com
       - key: TEXT_REMOVAL_ENGINE
         value: snapedit
+      - key: GEMINI_API_KEY
+        sync: false
