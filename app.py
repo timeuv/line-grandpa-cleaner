@@ -146,6 +146,11 @@ async def startup_event():
     print(f"🔑 LINE Secret configured: {'Yes' if LINE_CHANNEL_SECRET else 'No'}")
     print("=" * 60)
 
+@app.get("/health")
+@app.get("/ping")
+async def health_check():
+    return {"status": "ok"}
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Nice dashboard view"""
